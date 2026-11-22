@@ -1,0 +1,94 @@
+name: Backend
+
+on:
+  pull_request:
+    paths: ["backend/**", ".github/workflows/backend.yml"]
+  push:
+    branches: [main]
+    paths: ["backend/**", ".github/workflows/backend.yml"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: backend
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.3
+      - run: uv sync --locked
+      - name: Lint
+        run: uvx ruff check src tests evals scripts
+      - name: No API keys in the repository
+        working-directory: .
+        run: |
+          if git grep -nE '(sk-(proj-)?[A-Za-z0-9_-]{20,}|pcsk_[A-Za-z0-9_]{20,})' -- . ':!**/uv.lock'; then
+            echo "::error::Something that looks like an API key is committed."; exit 1
+          fi
+      - name: Tests
+        run: uv run pytest -q
+
+  eval-gate:
+    needs: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Did the agent or the evals change?
+        id: changed
+        working-directory: .
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if git diff --name-only "$BASE" HEAD | grep -qE '^backend/(src|evals)/'; then
+            echo "agent=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "agent=false" >> "$GITHUB_OUTPUT"
+            echo "No change under backend/src or backend/evals: eval gate skipped, no tokens spent." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - if: steps.changed.outputs.agent == 'true'
+        uses: astral-sh/setup-uv@v10.3.3
+      - if: steps.changed.outputs.agent == 'true'
+        run: uv sync --locked
+      - name: Check the OpenAI key secret
+        if: steps.changed.outputs.agent == 'true'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "::error::The OPENAI_API_KEY secret is empty or not set."; exit 1
+          fi
+          case "$OPENAI_API_KEY" in
+            *[[:space:]]*|*\"*|*\'*)
+              echo "::error::The OPENAI_API_KEY secret contains whitespace, a line break or quotes. Paste only the key."; exit 1 ;;
+          esac
+          case "$OPENAI_API_KEY" in
+            sk-*) echo "OPENAI_API_KEY looks well-formed (${#OPENAI_API_KEY} characters)." ;;
+            *) echo "::error::The OPENAI_API_KEY secret doesn't start with sk- (was OPENAI_API_KEY= pasted too?)."; exit 1 ;;
+          esac
+      - name: Real-model evals
+        if: steps.changed.outputs.agent == 'true'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          PINECONE_API_KEY: unused
+        run: uv run python -m evals.run_evals --set smoke --runs 2 --no-langfuse --no-pinecone
+      - name: Gate
+        if: steps.changed.outputs.agent == 'true'
+        run: uv run python -m evals.gate
+      - name: Keep the full results
+        if: always() && steps.changed.outputs.agent == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: eval-results
+          path: backend/evals/results/latest.json
+          if-no-files-found: ignore

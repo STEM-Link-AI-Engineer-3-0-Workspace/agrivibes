@@ -1,0 +1,20 @@
+name: Compose build
+
+on:
+  pull_request:
+    paths: ["compose.yaml", "*/Dockerfile", "*/pyproject.toml", "*/uv.lock", ".github/workflows/compose.yml"]
+  push:
+    branches: [main]
+    paths: ["compose.yaml", "*/Dockerfile", "*/pyproject.toml", "*/uv.lock", ".github/workflows/compose.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: cp .env.example .env
+      - run: docker compose config --quiet
+      - run: docker compose build

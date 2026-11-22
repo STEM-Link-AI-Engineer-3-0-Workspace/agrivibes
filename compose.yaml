@@ -1,0 +1,31 @@
+name: agrivibes
+
+services:
+  fieldsat:
+    build: ./fieldsat
+    env_file: .env
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    env_file: .env
+    environment:
+      FIELDSAT_URL: http://fieldsat:8001/mcp
+      LANGFUSE_ENVIRONMENT: ${LANGFUSE_ENVIRONMENT:-production}
+    depends_on:
+      fieldsat:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    environment:
+      AGRIVIBE_API: http://backend:8000
+      AGRIVIBE_BACKEND_MODE: lesson2
+      AGRIVIBE_TIMEOUT: "180"
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${FRONTEND_PORT:-7860}:7860"
+    restart: unless-stopped
